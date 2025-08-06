@@ -1,9 +1,14 @@
 #include <hyprland/src/plugins/PluginAPI.hpp>
 #include <hyprland/src/devices/IKeyboard.hpp>
 #include <hyprland/src/Compositor.hpp>
+#include <sys/stat.h>
+#include <string.h>
+#include <stdio.h>
+
+std::string          named_pipe = "/tmp/__testMyPlugin";
+FILE*                file       = 0;
 
 inline HANDLE        PHANDLE = nullptr;
-FILE*                o_file  = nullptr;
 SP<HOOK_CALLBACK_FN> mouseButtonCb;
 SP<HOOK_CALLBACK_FN> touchDownCb;
 SP<HOOK_CALLBACK_FN> keyPressCb;
@@ -12,53 +17,45 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
     return HYPRLAND_API_VERSION;
 }
 
-static void onMouseButton(void* self, std::any data) {
+static void write_event() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
+    int fd = open(myfifo, O_WRONLY | O_NONBLOCK);
+    if (fd == -1) {
+        return;
+    }
+    // output: "<sec> <nsec>"
+    std::string msg = std::to_string(ts.tv_sec) + " " + std::to_string(ts.tv_nsec) + "\n";
+    write(fd, msg.c_str(), msg.size());
+    close(fd);
+}
+
+static void onMouseButton(void* self, std::any data) {
     // data is guaranteed
     const auto mouseButtonEvent = std::any_cast<IPointer::SButtonEvent>(data);
     if (mouseButtonEvent.state != WL_POINTER_BUTTON_STATE_PRESSED) {
         return;
     }
-    std::string text("onMouseButton\n");
-    fwrite(text.c_str(), 1, text.size(), o_file);
-    fflush(o_file);
+    write_event();
 }
 
 static void onTouchDown(void* self, std::any data) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
     // data is guaranteed
-    const auto  touchDownEvent = std::any_cast<Aquamarine::ITouch::SDownEvent>(data);
-
-    std::string text("onTouchDown\n");
-    fwrite(text.c_str(), 1, text.size(), o_file);
-    fflush(o_file);
+    const auto touchDownEvent = std::any_cast<Aquamarine::ITouch::SDownEvent>(data);
+    write_event();
 }
 
 static void onKeyPress(void* self, std::any data) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
     // data is guaranteed
     auto dataMap = std::any_cast<std::unordered_map<std::string, std::any>>(data);
     auto event   = std::any_cast<IKeyboard::SKeyEvent>(dataMap["event"]);
     if (event.state != WL_KEYBOARD_KEY_STATE_PRESSED) {
         return;
     }
-    std::string text = "onKeyPress " + std::to_string(event.keycode) + "\n";
-    fwrite(text.c_str(), 1, text.size(), o_file);
-    fflush(o_file);
+    write_event();
 }
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
-    o_file = fopen("/home/ross/programming/tmp/MyPlugin/log.txt", "w+");
-    if (o_file == nullptr) {
-        HyprlandAPI::addNotification(PHANDLE, "[MyPlugin] COULD NOT OPEN FILE.", CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
-        throw std::runtime_error("[MyPlugin] Internal state error");
-    }
-    fprintf(o_file, "%s", "PLUGIN INIT\n");
-    fflush(o_file);
-
     PHANDLE = handle;
 
     const std::string HASH = __hyprland_api_get_hash();
@@ -68,6 +65,28 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (HASH != GIT_COMMIT_HASH) {
         HyprlandAPI::addNotification(PHANDLE, "[MyPlugin] Mismatched headers! Can't proceed.", CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
         throw std::runtime_error("[MyPlugin] Version mismatch");
+    }
+
+    struct stat stats;
+    if (stat(myfifo, &stats) == -1) {
+        if (errno != 2) {
+            std::string errnodesc = strerror(errno);
+            std::string msg       = "[MyPlugin] stat named pipe fail: " + errnodesc;
+            HyprlandAPI::addNotification(PHANDLE, msg, CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
+            throw std::runtime_error(msg);
+        }
+        if (mkfifo(named_pipe.c_str(), 0666) == -1) {
+            std::string errnodesc = strerror(errno);
+            std::string msg       = "[MyPlugin] create named pipe fail: " + errnodesc;
+            HyprlandAPI::addNotification(PHANDLE, msg, CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
+            throw std::runtime_error(msg);
+        }
+    } else {
+        if (stats.st_mode && S_IFIFO == 0) {
+            std::string msg = "[MyPlugin] named pipe file already exists and is not a named pipe";
+            HyprlandAPI::addNotification(PHANDLE, msg, CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
+            throw std::runtime_error(msg);
+        }
     }
 
     mouseButtonCb = HyprlandAPI::registerCallbackDynamic(PHANDLE, "mouseButton", [&](void* self, SCallbackInfo& info, std::any data) {
@@ -85,7 +104,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         return;
     });
 
-    HyprlandAPI::addNotification(PHANDLE, "[MyPlugin] Initialized successfully!", CHyprColor{0.2, 1.0, 0.2, 1.0}, 5000);
+    HyprlandAPI::addNotification(PHANDLE, "[MyPlugin] Initialized z successfully!", CHyprColor{0.2, 1.0, 0.2, 1.0}, 5000);
 
     return {"MyPlugin", "Not that amazing plugin to test the world!", "Me", "0.1"};
 }

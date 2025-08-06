@@ -5,8 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 
-std::string          named_pipe = "/tmp/__testMyPlugin";
-FILE*                file       = 0;
+const char*          fifo_file_path = "/tmp/__testMyPlugin2";
 
 inline HANDLE        PHANDLE = nullptr;
 SP<HOOK_CALLBACK_FN> mouseButtonCb;
@@ -20,13 +19,23 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 static void write_event() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    int fd = open(myfifo, O_WRONLY | O_NONBLOCK);
+    int fd = open(fifo_file_path, O_WRONLY | O_NONBLOCK);
     if (fd == -1) {
+        std::string msgerr = strerror(errno);
+        std::string msg    = "[MyPlugin] open " + msgerr;
+        Debug::log(LOG, msg);
         return;
     }
     // output: "<sec> <nsec>"
     std::string msg = std::to_string(ts.tv_sec) + " " + std::to_string(ts.tv_nsec) + "\n";
-    write(fd, msg.c_str(), msg.size());
+    if (write(fd, msg.c_str(), msg.size()) == -1) {
+        std::string msgerr = strerror(errno);
+        std::string msg    = "[MyPlugin] WRITE-ING error" + msgerr;
+        Debug::log(LOG, msg);
+    } else {
+        Debug::log(LOG, "[MyPlugin] WRITE-ING SUCCESSFULL");
+    }
+    fsync(fd);
     close(fd);
 }
 
@@ -68,14 +77,14 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     }
 
     struct stat stats;
-    if (stat(myfifo, &stats) == -1) {
+    if (stat(fifo_file_path, &stats) == -1) {
         if (errno != 2) {
             std::string errnodesc = strerror(errno);
             std::string msg       = "[MyPlugin] stat named pipe fail: " + errnodesc;
             HyprlandAPI::addNotification(PHANDLE, msg, CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
             throw std::runtime_error(msg);
         }
-        if (mkfifo(named_pipe.c_str(), 0666) == -1) {
+        if (mkfifo(fifo_file_path, 0666) == -1) {
             std::string errnodesc = strerror(errno);
             std::string msg       = "[MyPlugin] create named pipe fail: " + errnodesc;
             HyprlandAPI::addNotification(PHANDLE, msg, CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
